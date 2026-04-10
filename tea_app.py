@@ -199,7 +199,7 @@ with tab1:
                 payload = {
                     "systemInstruction": {"parts": [{"text": dynamic_system_prompt}]},
                     "contents": current_api_history,
-                    "tools": [{"google_search": {}}], # ★400エラー修正箇所：アンダーバーに変更！
+                    "tools": [{"google_search": {}}], # コンシェルジュは検索利用可能
                     "generationConfig": {"temperature": 0.6}
                 }
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
@@ -264,10 +264,10 @@ with tab2:
                         if results['documents'] and len(results['documents']) > 0:
                             relevant_knowledge = "\n".join(results['documents'][0])
 
-                # 【進化した査定用システムプロンプト】(JSONを出力させる)
+                # 【進化した査定用システムプロンプト】(JSONを出力させるため、Google検索への言及を削除)
                 checker_system_prompt = f"""
                 あなたは冷徹で論理的な「お茶の専門鑑定士」です。
-                ユーザーが提示したお茶の商品情報（キャッチコピー、成分、価格等）を、以下の【RAG知識】と【Google検索】を用いて厳しく査定してください。
+                ユーザーが提示したお茶の商品情報（キャッチコピー、成分、価格等）を、以下の【RAG知識】を用いて厳しく査定してください。
                 特に「非科学的な健康効果」「不当な高価格」「原産地の偽装・誤認」を厳しくチェックしてください。
                 
                 【RAG知識 (あなたの専門知識データベース)】
@@ -287,7 +287,7 @@ with tab2:
                 payload = {
                     "systemInstruction": {"parts": [{"text": checker_system_prompt}]},
                     "contents": [{"role": "user", "parts": user_parts}],
-                    "tools": [{"google_search": {}}], # ★400エラー修正箇所：アンダーバーに変更！
+                    # JSONモード(responseMimeType: application/json)とツール(google_search)は併用不可のため削除
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
                 }
                 
