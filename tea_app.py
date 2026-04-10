@@ -44,13 +44,34 @@ CHROMA_DB_PATH = "./tea_chroma_db"
 # 2. ベクトルデータベース (ChromaDB) エンジン
 # ==========================================
 
+def call_api_with_retry(url, headers, payload):
+    """APIの制限や混雑時に、待機時間を延ばしながら自動で再試行するヘルパー関数"""
+    delays = [1, 2, 4, 8, 16]
+    for attempt in range(len(delays) + 1):
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=60)
+            if res.status_code == 200:
+                return res
+            # 429(制限到達) または 503(サーバー高負荷) の場合のみリトライ
+            elif res.status_code in [429, 503] and attempt < len(delays):
+                time.sleep(delays[attempt])
+                continue
+            else:
+                return res
+        except requests.exceptions.RequestException as e:
+            if attempt < len(delays):
+                time.sleep(delays[attempt])
+                continue
+            raise e
+    return None
+
 def get_embedding(text):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {"model": "models/text-embedding-004", "content": {"parts": [{"text": text}]}}
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=10)
-        if res.status_code == 200:
+        res = call_api_with_retry(url, headers, payload)
+        if res and res.status_code == 200:
             return res.json()['embedding']['values']
         return None
     except Exception:
@@ -205,8 +226,8 @@ with tab1:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
                 
                 try:
-                    res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=60)
-                    if res.status_code == 200:
+                    res = call_api_with_retry(url, headers={'Content-Type': 'application/json'}, payload=payload)
+                    if res and res.status_code == 200:
                         reply_text = res.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'エラー')
                         st.markdown(reply_text)
                         st.session_state.messages.append({"role": "assistant", "content": {"text": reply_text}})
@@ -215,8 +236,13 @@ with tab1:
                             {"role": "model", "parts": [{"text": reply_text}]}
                         ])
                         st.rerun()
+                    elif res:
+                        if res.status_code == 503:
+                            st.error("現在AIサーバーが大変混み合っております。何度か自動再試行しましたが接続できませんでした。少し時間をおいてから再度お試しください。")
+                        else:
+                            st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
                     else:
-                        st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
+                        st.error("APIリクエストが失敗しました。")
                 except Exception as e:
                     st.error(f"通信エラー: {e}")
 
@@ -294,8 +320,8 @@ with tab2:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
                 
                 try:
-                    res = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=60)
-                    if res.status_code == 200:
+                    res = call_api_with_retry(url, headers={'Content-Type': 'application/json'}, payload=payload)
+                    if res and res.status_code == 200:
                         result_text = res.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
                         
                         try:
@@ -339,7 +365,12 @@ with tab2:
                             st.error("AIの判定結果のフォーマットエラーです。もう一度お試しください。")
                             st.write("生データ:", result_text)
                             
+                    elif res:
+                        if res.status_code == 503:
+                            st.error("現在AIサーバーが大変混み合っております。何度か自動再試行しましたが接続できませんでした。少し時間をおいてから再度お試しください。")
+                        else:
+                            st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
                     else:
-                        st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
+                        st.error("APIリクエストが失敗しました。")
                 except Exception as e:
                     st.error(f"通信エラー: {e}")
