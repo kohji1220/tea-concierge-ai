@@ -16,17 +16,16 @@ import streamlit as st
 import chromadb
 
 # ==========================================
-# 1. 初期設定 & 高級UI (CSS)
+# 1. 初期設定 & UI (CSS)
 # ==========================================
 st.set_page_config(page_title="AI Tea Concierge & Analyzer", page_icon="🍵", layout="centered")
 
+# ダークモード/ライトモードの両方に適応するよう、背景色・文字色の強制指定を解除
 st.markdown("""
 <style>
-    .stApp { background-color: #FAFAFA; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
-    h1 { color: #2E4053; font-weight: 300; letter-spacing: 2px; border-bottom: 1px solid #D5DBDB; padding-bottom: 10px; }
-    .stChatInputContainer { border: 1px solid #AAB7B8 !important; border-radius: 20px !important; background-color: #FFFFFF !important; }
-    [data-testid="stSidebar"] { background-color: #F2F4F4; border-right: 1px solid #E5E7E9; }
-    .stSuccess { background-color: #EAF2F8; color: #2874A6; border-color: #D4E6F1; }
+    .stApp { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+    h1 { font-weight: 300; letter-spacing: 2px; border-bottom: 1px solid #D5DBDB; padding-bottom: 10px; }
+    .stChatInputContainer { border-radius: 20px !important; }
     /* サクラチェッカー用の強調表示 */
     .risk-high { color: #E74C3C; font-weight: bold; font-size: 1.2em; }
     .risk-medium { color: #F39C12; font-weight: bold; font-size: 1.2em; }
@@ -200,7 +199,7 @@ with tab1:
                 payload = {
                     "systemInstruction": {"parts": [{"text": dynamic_system_prompt}]},
                     "contents": current_api_history,
-                    "tools": [{"googleSearch": {}}],
+                    "tools": [{"google_search": {}}], # ★400エラー修正箇所：アンダーバーに変更！
                     "generationConfig": {"temperature": 0.6}
                 }
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
@@ -217,7 +216,7 @@ with tab1:
                         ])
                         st.rerun()
                     else:
-                        st.error(f"APIエラー: {res.status_code}")
+                        st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
                 except Exception as e:
                     st.error(f"通信エラー: {e}")
 
@@ -288,8 +287,8 @@ with tab2:
                 payload = {
                     "systemInstruction": {"parts": [{"text": checker_system_prompt}]},
                     "contents": [{"role": "user", "parts": user_parts}],
-                    "tools": [{"googleSearch": {}}],
-                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"} # 確実にJSONを出させる
+                    "tools": [{"google_search": {}}], # ★400エラー修正箇所：アンダーバーに変更！
+                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
                 }
                 
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={API_KEY}"
@@ -341,6 +340,6 @@ with tab2:
                             st.write("生データ:", result_text)
                             
                     else:
-                        st.error(f"APIエラー: {res.status_code}")
+                        st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
                 except Exception as e:
                     st.error(f"通信エラー: {e}")
