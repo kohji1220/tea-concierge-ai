@@ -80,31 +80,42 @@ def generate_id(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
 
 def fetch_text_from_url(url):
-    """Jina Readerを使ってURLからテキストをスクレイピングする関数"""
+    """直接URLにアクセスしてテキストを簡易抽出する関数（Jina APIのブロック回避）"""
+    import re
     try:
-        # URLの先頭に https://r.jina.ai/ をつけるだけ
-        jina_url = f"https://r.jina.ai/{url.strip()}"
+        url = url.strip()
         headers = {
-            "Accept": "text/plain", # 余計なHTMLを弾く
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8"
         }
-        response = requests.get(jina_url, headers=headers, timeout=20)
+        response = requests.get(url, headers=headers, timeout=15)
         
         if response.status_code == 200:
-            text = response.text
+            html = response.text
             # ★Amazon等のBot対策（CAPTCHA等）に弾かれた場合のテキストを検知する
             block_keywords = [
                 "503 Service Unavailable", 
                 "Robot Check", 
                 "Enter the characters you see below", 
                 "CAPTCHA", 
-                "ご迷惑をおかけしております",
                 "To discuss automated access to Amazon data"
             ]
             for kw in block_keywords:
-                if kw in text:
-                    return "[エラー] Amazon等のセキュリティ(Bot対策)にブロックされ、情報を抽出できませんでした。お手数ですが、ページ内の説明文を直接コピーして手動入力欄に貼り付けてください。"
+                if kw in html:
+                    return "[エラー] 大手サイトのセキュリティ(Bot対策)にブロックされました。お手数ですが、ページ内の説明文を直接コピーして手動入力欄に貼り付けてください。"
+            
+            # BeautifulSoupを使わず、正規表現で簡易的にノイズとHTMLタグを除去
+            html = re.sub(r'<script.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<style.*?</style>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+            html = re.sub(r'<!--.*?-->', ' ', html, flags=re.DOTALL)
+            text = re.sub(r'<[^>]+>', ' ', html)
+            text = re.sub(r'\s+', ' ', text).strip()
+            
             return text
+            
+        elif response.status_code in [403, 503]:
+             return f"[エラー] 対象サイトのセキュリティ(Bot対策等)によりアクセスが拒否されました (HTTP {response.status_code})。お手数ですが手動入力欄をご利用ください。"
         else:
             return f"[エラー] URLからの情報取得に失敗しました (HTTP {response.status_code})"
     except Exception as e:
