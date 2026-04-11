@@ -39,14 +39,8 @@ CHROMA_DB_PATH = "./tea_chroma_db"
 # 2. 【最重要】API安全呼び出し・見えないゴミ除去関数
 # ==========================================
 def build_safe_url(base_url, api_key):
-    """
-    コピーペースト等で混入した「見えない文字(ゼロ幅スペース等)」や改行を
-    徹底的に破壊・除去し、絶対に通信エラーを起こさせないための強力なサニタイズ関数
-    """
-    # 1. キー側のゴミや改行を除去
     clean_key = str(api_key).strip().replace('"', '').replace("'", "").replace('\n', '').replace('\r', '')
     raw_url = f"{base_url}?key={clean_key}"
-    # 2. ASCII以外の見えないUnicode文字を完全消去して綺麗な文字列に戻す
     safe_url = raw_url.encode('ascii', 'ignore').decode('ascii').strip()
     return safe_url
 
@@ -57,7 +51,6 @@ def call_api_with_retry(url, headers, payload):
             res = requests.post(url, headers=headers, json=payload, timeout=60)
             if res.status_code == 200:
                 return res
-            # 429(制限到達) または 503(サーバー高負荷) の場合のみリトライ
             elif res.status_code in [429, 503] and attempt < len(delays):
                 time.sleep(delays[attempt])
                 continue
@@ -74,7 +67,7 @@ def get_embedding(text):
     base_url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
     url = build_safe_url(base_url, API_KEY)
     headers = {'Content-Type': 'application/json'}
-    payload = {"model": "models/text-embedding-004", "content": {"parts": [{"text": text}]}}
+    payload = {"model": "models/text-embedding-004", "content": {"parts": [{"text": text[:10000]}]}} # 制限回避のため文字数をカット
     try:
         res = call_api_with_retry(url, headers, payload)
         if res and res.status_code == 200:
@@ -85,6 +78,23 @@ def get_embedding(text):
 
 def generate_id(text):
     return hashlib.md5(text.encode('utf-8')).hexdigest()
+
+def fetch_text_from_url(url):
+    """Jina Readerを使ってURLからテキストをスクレイピングする関数"""
+    try:
+        # URLの先頭に https://r.jina.ai/ をつけるだけ
+        jina_url = f"https://r.jina.ai/{url.strip()}"
+        headers = {
+            "Accept": "text/plain", # 余計なHTMLを弾く
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        response = requests.get(jina_url, headers=headers, timeout=20)
+        if response.status_code == 200:
+            return response.text
+        else:
+            return f"[エラー] URLからの情報取得に失敗しました (HTTP {response.status_code})"
+    except Exception as e:
+        return f"[エラー] URL通信中に問題が発生しました: {e}"
 
 @st.cache_resource(show_spinner=False)
 def init_chromadb():
@@ -146,6 +156,7 @@ with st.sidebar:
     st.success(f"ChromaDB Active ({db_count} records)")
     st.success("Google Search Grounding: Ready")
     st.success("Multimodal Vision: Ready")
+    st.success("Jina URL Scraper: Ready")
     st.markdown("---")
 
 st.title("AI Tea Concierge & Analyzer")
@@ -157,7 +168,7 @@ st.title("AI Tea Concierge & Analyzer")
 tab1, tab2 = st.tabs(["💬 コンシェルジュ (通常対話)", "🚨 査定チェッカー (怪しさ判定)"])
 
 # ------------------------------------------
-# タブ1: 通常のコンシェルジュチャット
+# タブ1: 通常のコンシェルジュチャット (省略なし)
 # ------------------------------------------
 with tab1:
     st.markdown("*Advanced Reasoning Engine for Tea Science & Market Economy*")
@@ -230,7 +241,6 @@ with tab1:
                     "generationConfig": {"temperature": 0.6}
                 }
                 
-                # 安全なURLの生成
                 base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
                 url = build_safe_url(base_url, API_KEY)
                 
@@ -247,7 +257,7 @@ with tab1:
                         st.rerun()
                     elif res:
                         if res.status_code == 503:
-                            st.error("現在AIサーバーが大変混み合っております。何度か自動再試行しましたが接続できませんでした。少し時間をおいてから再度お試しください。")
+                            st.error("現在AIサーバーが大変混み合っております。何度か自動再試行しましたが接続できませんでした。")
                         else:
                             st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
                     else:
@@ -256,32 +266,53 @@ with tab1:
                     st.error(f"通信エラー: {e}")
 
 # ------------------------------------------
-# タブ2: 査定チェッカー (進化したプロンプトによるJSON出力とUI描画)
+# タブ2: 査定チェッカー (URLスクレイピング機能追加)
 # ------------------------------------------
 with tab2:
     st.markdown("### 🔍 商品の怪しさ・適正価格を鑑定します")
-    st.write("商品の説明文（コピペ）や、スクショ画像をアップロードしてください。")
+    st.write("商品のURLを貼り付けるか、説明文・画像を直接入力してください。")
+    
+    # 🌟 新機能：URL入力欄
+    checker_url = st.text_input("🔗 商品ページのURLを入力 (Amazon, 楽天, 専門店など)", placeholder="https://...")
     
     if "checker_uploader_key" not in st.session_state:
         st.session_state.checker_uploader_key = 1000
 
+    checker_text = st.text_area("商品説明やキャッチコピーを手動で追加 (任意)", height=150)
     checker_image = st.file_uploader(
         "商品のスクショ画像 (任意)", 
         type=["png", "jpg", "jpeg", "webp"], 
         key=f"uploader_{st.session_state.checker_uploader_key}"
     )
-    checker_text = st.text_area("商品説明やキャッチコピーを貼り付け", height=150)
     
-    if st.button("鑑定開始", type="primary"):
-        if not checker_text and not checker_image:
-            st.warning("画像か説明文のどちらかを入力してください。")
+    if st.button("🔥 鑑定開始", type="primary"):
+        if not checker_url and not checker_text and not checker_image:
+            st.warning("URL、画像、説明文のいずれかを入力してください。")
         else:
-            with st.spinner("RAGデータベースと照合し、科学的・市場的観点から査定中..."):
-                
-                user_parts = []
-                prompt_text = "以下の商品情報（画像・テキスト）を査定してください。\n\n"
+            with st.spinner("情報を収集中..."):
+                scraped_text = ""
+                # URLが入力されていればスクレイピングを実行
+                if checker_url:
+                    with st.spinner("URLから商品情報を抽出しています (数秒かかります)..."):
+                        scraped_text = fetch_text_from_url(checker_url)
+                        if "[エラー]" in scraped_text:
+                            st.error(scraped_text)
+                            scraped_text = ""
+                        else:
+                            st.success("✅ URLからの情報抽出に成功しました！")
+                            # 抽出したテキストをチラ見せ（長すぎるので1000文字でカットして表示）
+                            with st.expander("抽出されたテキストデータを確認する"):
+                                st.text(scraped_text[:1000] + "\n...(以下省略)")
+
+                # 査定用テキストの構築
+                combined_text = ""
+                if scraped_text:
+                    combined_text += f"【URLから抽出された商品説明】\n{scraped_text}\n\n"
                 if checker_text:
-                    prompt_text += f"【商品説明】\n{checker_text}\n"
+                    combined_text += f"【入力された商品説明】\n{checker_text}\n\n"
+
+                user_parts = []
+                prompt_text = "以下の商品情報（画像・テキスト）を査定してください。\n\n" + combined_text
                 user_parts.append({"text": prompt_text})
                 
                 if checker_image is not None:
@@ -289,9 +320,12 @@ with tab2:
                     base64_data = base64.b64encode(file_bytes).decode("utf-8")
                     user_parts.append({"inlineData": {"mimeType": checker_image.type, "data": base64_data}})
                 
+            with st.spinner("RAGデータベースと照合し、科学的・市場的観点から査定中..."):
                 relevant_knowledge = ""
-                if checker_text and collection.count() > 0:
-                    query_emb = get_embedding(checker_text)
+                # 文字数が多すぎるとChromaDBがエラーを吐くので、最初の1000文字だけでベクトル検索
+                search_query_text = combined_text[:1000]
+                if search_query_text and collection.count() > 0:
+                    query_emb = get_embedding(search_query_text)
                     if query_emb:
                         results = collection.query(query_embeddings=[query_emb], n_results=min(3, collection.count()))
                         if results['documents'] and len(results['documents']) > 0:
@@ -349,7 +383,6 @@ with tab2:
                     "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
                 }
                 
-                # 安全なURLの生成
                 base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
                 url = build_safe_url(base_url, API_KEY)
                 
