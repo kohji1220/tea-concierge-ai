@@ -34,7 +34,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 if "GEMINI_API_KEY" in st.secrets:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
+    API_KEY = st.secrets["GEMINI_API_KEY"].strip().replace('"', '').replace("'", "")
 else:
     API_KEY = "あなたのAPIキーをここに入力してください"
 
