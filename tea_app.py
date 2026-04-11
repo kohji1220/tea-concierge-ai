@@ -86,11 +86,25 @@ def fetch_text_from_url(url):
         jina_url = f"https://r.jina.ai/{url.strip()}"
         headers = {
             "Accept": "text/plain", # 余計なHTMLを弾く
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         }
         response = requests.get(jina_url, headers=headers, timeout=20)
+        
         if response.status_code == 200:
-            return response.text
+            text = response.text
+            # ★Amazon等のBot対策（CAPTCHA等）に弾かれた場合のテキストを検知する
+            block_keywords = [
+                "503 Service Unavailable", 
+                "Robot Check", 
+                "Enter the characters you see below", 
+                "CAPTCHA", 
+                "ご迷惑をおかけしております",
+                "To discuss automated access to Amazon data"
+            ]
+            for kw in block_keywords:
+                if kw in text:
+                    return "[エラー] Amazon等のセキュリティ(Bot対策)にブロックされ、情報を抽出できませんでした。お手数ですが、ページ内の説明文を直接コピーして手動入力欄に貼り付けてください。"
+            return text
         else:
             return f"[エラー] URLからの情報取得に失敗しました (HTTP {response.status_code})"
     except Exception as e:
@@ -289,152 +303,152 @@ with tab2:
         if not checker_url and not checker_text and not checker_image:
             st.warning("URL、画像、説明文のいずれかを入力してください。")
         else:
-            with st.spinner("情報を収集中..."):
-                scraped_text = ""
-                # URLが入力されていればスクレイピングを実行
-                if checker_url:
-                    with st.spinner("URLから商品情報を抽出しています (数秒かかります)..."):
-                        scraped_text = fetch_text_from_url(checker_url)
-                        if "[エラー]" in scraped_text:
-                            st.error(scraped_text)
-                            scraped_text = ""
-                        else:
-                            st.success("✅ URLからの情報抽出に成功しました！")
-                            # 抽出したテキストをチラ見せ（長すぎるので1000文字でカットして表示）
-                            with st.expander("抽出されたテキストデータを確認する"):
-                                st.text(scraped_text[:1000] + "\n...(以下省略)")
-
-                # 査定用テキストの構築
-                combined_text = ""
-                if scraped_text:
-                    combined_text += f"【URLから抽出された商品説明】\n{scraped_text}\n\n"
-                if checker_text:
-                    combined_text += f"【入力された商品説明】\n{checker_text}\n\n"
-
-                user_parts = []
-                prompt_text = "以下の商品情報（画像・テキスト）を査定してください。\n\n" + combined_text
-                user_parts.append({"text": prompt_text})
-                
-                if checker_image is not None:
-                    file_bytes = checker_image.getvalue()
-                    base64_data = base64.b64encode(file_bytes).decode("utf-8")
-                    user_parts.append({"inlineData": {"mimeType": checker_image.type, "data": base64_data}})
-                
-            with st.spinner("RAGデータベースと照合し、科学的・市場的観点から査定中..."):
-                relevant_knowledge = ""
-                # 文字数が多すぎるとChromaDBがエラーを吐くので、最初の1000文字だけでベクトル検索
-                search_query_text = combined_text[:1000]
-                if search_query_text and collection.count() > 0:
-                    query_emb = get_embedding(search_query_text)
-                    if query_emb:
-                        results = collection.query(query_embeddings=[query_emb], n_results=min(3, collection.count()))
-                        if results['documents'] and len(results['documents']) > 0:
-                            relevant_knowledge = "\n".join(results['documents'][0])
-
-                checker_system_prompt = f"""
-                あなたは、茶葉の販売サイトや商品情報から「サクラ・偽装・粗悪品」を冷徹に見抜くデータ照合マシーンです。
-                ユーザーから提供される【商品情報】（レビュー含む）と、システムから提供される【RAG相場・知識データ】を照合し、以下の厳密なスコアリングロジックに基づいて「サクラ度（0〜100）」を算出してください。
-                感情や情緒には一切流されず、事実とデータのみに基づいて冷酷に判定を下してください。
-
-                【RAG知識 (あなたの専門知識データベース)】
-                {relevant_knowledge if relevant_knowledge else "（特になし）"}
-
-                【査定ロジック：加点・減点方式】
-                基準スコアを「50点（判断保留）」とし、以下の①〜③の基準で加点（信頼度アップ＝サクラ度低下）・減点（怪しい＝サクラ度上昇）を行います。最終的なサクラ度は0（完全に安全）〜100（極めて怪しい・詐欺）で出力してください。
-
-                ### ① 情報の「解像度」と「客観的証拠」の評価（サクラ度を下げる要素）
-                以下の情報が具体的であるほど、サクラ度を下げてください。（目安: 優れた情報1つにつき -5〜-10点）
-                * 産地・地理的表示: 単なる国名や地域名ではなく、具体的な農園名、区画、ロット番号、標高の数値があるか。
-                * 品種・栽培: 学術的な正式名称、具体的な摘採時期、摘採方法（手摘み等）。
-                * 第三者認証: JAS有機、EU有機、フェアトレード等の客観的認証があるか。
-                * 製法・生産者: 萎凋や焙煎の具体的な工程説明、製茶師の名前・経歴が明記されているか。
-                * 鮮度管理: 賞味期限だけでなく、製造年月日や具体的な保存方法の指定があるか。
-
-                ### ② 「価格」と「主張」の整合性評価（RAGデータとの照合）
-                謳い文句と、RAG相場データを比較し矛盾を突きます。
-                * 安すぎる矛盾（目安: +20〜+30点）: 「最高級」「手摘み」と謳っているのに相場より著しく安い場合。
-                * 高すぎる矛盾（目安: +15〜+25点）: ①の「具体的な事実」がスッカスカであるにもかかわらず高価格な場合。
-                * 正当な高価格（目安: -10〜-20点）: ①の客観的証拠が網羅的に提示されており、RAG相場と一致する場合。
-
-                ### ③ 「ごまかし」と「不誠実さ」の検知（サクラ度を急上昇させる要素）
-                * 情緒的ワードの多用（目安: +5〜+15点）
-                * 健康効果の過剰・違法な主張（目安: +25〜+30点）: 薬機法に抵触する表現。
-                * 煽り文句（目安: +10〜+15点）
-                * 不自然なレビュー（目安: +15〜+25点）
-                * 販売者の透明性欠如（目安: +10〜+20点）
-
-                【出力フォーマット（JSON形式）】
-                必ず以下のJSON形式のみで出力してください。Markdownのコードブロックは使用せず、純粋なJSON文字列のみを出力すること。
-                {{
-                  "sakura_score": [最終的なサクラ度を0〜100の整数で出力。100が最も怪しい],
-                  "risk_level": "[安全 / 注意 / 危険 のいずれかを出力]",
-                  "analysis_details": {{
-                    "resolution_check": "[①情報の解像度に関する冷徹な分析コメント]",
-                    "price_consistency": "[②価格と主張の整合性に関するRAGデータとの比較分析]",
-                    "deception_signals": "[③ごまかしシグナルの検知結果]"
-                  }},
-                  "conclusion": "[一般の購入検討者に向けた、最終的な冷酷かつ的確なアドバイス]"
-                }}
-                """
-
-                payload = {
-                    "systemInstruction": {"parts": [{"text": checker_system_prompt}]},
-                    "contents": [{"role": "user", "parts": user_parts}],
-                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
-                }
-                
-                base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-                url = build_safe_url(base_url, API_KEY)
-                
-                try:
-                    res = call_api_with_retry(url, headers={'Content-Type': 'application/json'}, payload=payload)
-                    if res and res.status_code == 200:
-                        result_text = res.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
-                        
-                        try:
-                            assessment = json.loads(result_text)
-                            
-                            st.markdown("### 📊 鑑定結果")
-                            score = assessment.get("sakura_score", 0)
-                            level = assessment.get("risk_level", "不明")
-                            
-                            st.write(f"**危険度（サクラ度）スコア:** {score}/100")
-                            st.progress(score / 100.0) 
-                            
-                            if level == "危険":
-                                st.error(f"🚨 【危険度：高】 この商品は誇大広告や不当価格の可能性が極めて高いです。")
-                            elif level == "注意":
-                                st.warning(f"⚠️ 【危険度：中】 いくつか疑わしい点があります。購入は慎重に。")
-                            else:
-                                st.success(f"✅ 【危険度：低】 特に怪しい点・非科学的な記述は見当たりません。")
-                                
-                            st.markdown("---")
-                            details = assessment.get("analysis_details", {})
-                            
-                            st.markdown("#### 🔎 ① 情報解像度チェック")
-                            st.info(details.get("resolution_check", "情報なし"))
-                            
-                            st.markdown("#### 💰 ② 価格と主張の整合性")
-                            st.warning(details.get("price_consistency", "情報なし"))
-                            
-                            st.markdown("#### 🎭 ③ ごまかしシグナル検知")
-                            st.error(details.get("deception_signals", "情報なし"))
-                            
-                            st.markdown("#### 👨‍⚖️ 最終結論")
-                            st.write(f"**{assessment.get('conclusion', '結論なし')}**")
-                            
-                            st.session_state.checker_uploader_key += 1
-                            
-                        except json.JSONDecodeError:
-                            st.error("AIの判定結果のフォーマットエラーです。もう一度お試しください。")
-                            st.write("生データ:", result_text)
-                            
-                    elif res:
-                        if res.status_code == 503:
-                            st.error("現在AIサーバーが大変混み合っております。")
-                        else:
-                            st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
+            scraped_text = ""
+            if checker_url:
+                with st.spinner("URLから商品情報を抽出しています (数秒かかります)..."):
+                    scraped_text = fetch_text_from_url(checker_url)
+                    if "[エラー]" in scraped_text:
+                        st.error(scraped_text) # ここで「Amazonに弾かれた」旨のエラーを表示
+                        scraped_text = ""      # テキストを空にして、AIに投げないようにする
                     else:
-                        st.error("APIリクエストが失敗しました。")
-                except Exception as e:
-                    st.error(f"通信エラー: {e}")
+                        st.success("✅ URLからの情報抽出に成功しました！")
+                        with st.expander("抽出されたテキストデータを確認する"):
+                            st.text(scraped_text[:1000] + "\n...(以下省略)")
+
+            combined_text = ""
+            if scraped_text:
+                combined_text += f"【URLから抽出された商品説明】\n{scraped_text}\n\n"
+            if checker_text:
+                combined_text += f"【入力された商品説明】\n{checker_text}\n\n"
+
+            # もしスクレイピングが弾かれ、かつ手入力テキストや画像も無ければここでストップ
+            if not combined_text.strip() and checker_image is None:
+                st.warning("査定対象のテキスト情報を取得できませんでした。手動で説明文をコピペするか、スクショ画像をアップロードしてください。")
+            else:
+                with st.spinner("RAGデータベースと照合し、科学的・市場的観点から査定中..."):
+                    user_parts = []
+                    prompt_text = "以下の商品情報（画像・テキスト）を査定してください。\n\n" + combined_text
+                    user_parts.append({"text": prompt_text})
+                    
+                    if checker_image is not None:
+                        file_bytes = checker_image.getvalue()
+                        base64_data = base64.b64encode(file_bytes).decode("utf-8")
+                        user_parts.append({"inlineData": {"mimeType": checker_image.type, "data": base64_data}})
+
+                    relevant_knowledge = ""
+                    # 文字数が多すぎるとChromaDBがエラーを吐くので、最初の1000文字だけでベクトル検索
+                    search_query_text = combined_text[:1000]
+                    if search_query_text and collection.count() > 0:
+                        query_emb = get_embedding(search_query_text)
+                        if query_emb:
+                            results = collection.query(query_embeddings=[query_emb], n_results=min(3, collection.count()))
+                            if results['documents'] and len(results['documents']) > 0:
+                                relevant_knowledge = "\n".join(results['documents'][0])
+
+                    checker_system_prompt = f"""
+                    あなたは、茶葉の販売サイトや商品情報から「サクラ・偽装・粗悪品」を冷徹に見抜くデータ照合マシーンです。
+                    ユーザーから提供される【商品情報】（レビュー含む）と、システムから提供される【RAG相場・知識データ】を照合し、以下の厳密なスコアリングロジックに基づいて「サクラ度（0〜100）」を算出してください。
+                    感情や情緒には一切流されず、事実とデータのみに基づいて冷酷に判定を下してください。
+
+                    【RAG知識 (あなたの専門知識データベース)】
+                    {relevant_knowledge if relevant_knowledge else "（特になし）"}
+
+                    【査定ロジック：加点・減点方式】
+                    基準スコアを「50点（判断保留）」とし、以下の①〜③の基準で加点（信頼度アップ＝サクラ度低下）・減点（怪しい＝サクラ度上昇）を行います。最終的なサクラ度は0（完全に安全）〜100（極めて怪しい・詐欺）で出力してください。
+
+                    ### ① 情報の「解像度」と「客観的証拠」の評価（サクラ度を下げる要素）
+                    以下の情報が具体的であるほど、サクラ度を下げてください。（目安: 優れた情報1つにつき -5〜-10点）
+                    * 産地・地理的表示: 単なる国名や地域名ではなく、具体的な農園名、区画、ロット番号、標高の数値があるか。
+                    * 品種・栽培: 学術的な正式名称、具体的な摘採時期、摘採方法（手摘み等）。
+                    * 第三者認証: JAS有機、EU有機、フェアトレード等の客観的認証があるか。
+                    * 製法・生産者: 萎凋や焙煎の具体的な工程説明、製茶師の名前・経歴が明記されているか。
+                    * 鮮度管理: 賞味期限だけでなく、製造年月日や具体的な保存方法の指定があるか。
+
+                    ### ② 「価格」と「主張」の整合性評価（RAGデータとの照合）
+                    謳い文句と、RAG相場データを比較し矛盾を突きます。
+                    * 安すぎる矛盾（目安: +20〜+30点）: 「最高級」「手摘み」と謳っているのに相場より著しく安い場合。
+                    * 高すぎる矛盾（目安: +15〜+25点）: ①の「具体的な事実」がスッカスカであるにもかかわらず高価格な場合。
+                    * 正当な高価格（目安: -10〜-20点）: ①の客観的証拠が網羅的に提示されており、RAG相場と一致する場合。
+
+                    ### ③ 「ごまかし」と「不誠実さ」の検知（サクラ度を急上昇させる要素）
+                    * 情緒的ワードの多用（目安: +5〜+15点）
+                    * 健康効果の過剰・違法な主張（目安: +25〜+30点）: 薬機法に抵触する表現。
+                    * 煽り文句（目安: +10〜+15点）
+                    * 不自然なレビュー（目安: +15〜+25点）
+                    * 販売者の透明性欠如（目安: +10〜+20点）
+
+                    【出力フォーマット（JSON形式）】
+                    必ず以下のJSON形式のみで出力してください。Markdownのコードブロックは使用せず、純粋なJSON文字列のみを出力すること。
+                    {{
+                      "sakura_score": [最終的なサクラ度を0〜100の整数で出力。100が最も怪しい],
+                      "risk_level": "[安全 / 注意 / 危険 のいずれかを出力]",
+                      "analysis_details": {{
+                        "resolution_check": "[①情報の解像度に関する冷徹な分析コメント]",
+                        "price_consistency": "[②価格と主張の整合性に関するRAGデータとの比較分析]",
+                        "deception_signals": "[③ごまかしシグナルの検知結果]"
+                      }},
+                      "conclusion": "[一般の購入検討者に向けた、最終的な冷酷かつ的確なアドバイス]"
+                    }}
+                    """
+
+                    payload = {
+                        "systemInstruction": {"parts": [{"text": checker_system_prompt}]},
+                        "contents": [{"role": "user", "parts": user_parts}],
+                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+                    }
+                    
+                    base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+                    url = build_safe_url(base_url, API_KEY)
+                    
+                    try:
+                        res = call_api_with_retry(url, headers={'Content-Type': 'application/json'}, payload=payload)
+                        if res and res.status_code == 200:
+                            result_text = res.json().get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
+                            
+                            try:
+                                assessment = json.loads(result_text)
+                                
+                                st.markdown("### 📊 鑑定結果")
+                                score = assessment.get("sakura_score", 0)
+                                level = assessment.get("risk_level", "不明")
+                                
+                                st.write(f"**危険度（サクラ度）スコア:** {score}/100")
+                                st.progress(score / 100.0) 
+                                
+                                if level == "危険":
+                                    st.error(f"🚨 【危険度：高】 この商品は誇大広告や不当価格の可能性が極めて高いです。")
+                                elif level == "注意":
+                                    st.warning(f"⚠️ 【危険度：中】 いくつか疑わしい点があります。購入は慎重に。")
+                                else:
+                                    st.success(f"✅ 【危険度：低】 特に怪しい点・非科学的な記述は見当たりません。")
+                                    
+                                st.markdown("---")
+                                details = assessment.get("analysis_details", {})
+                                
+                                st.markdown("#### 🔎 ① 情報解像度チェック")
+                                st.info(details.get("resolution_check", "情報なし"))
+                                
+                                st.markdown("#### 💰 ② 価格と主張の整合性")
+                                st.warning(details.get("price_consistency", "情報なし"))
+                                
+                                st.markdown("#### 🎭 ③ ごまかしシグナル検知")
+                                st.error(details.get("deception_signals", "情報なし"))
+                                
+                                st.markdown("#### 👨‍⚖️ 最終結論")
+                                st.write(f"**{assessment.get('conclusion', '結論なし')}**")
+                                
+                                st.session_state.checker_uploader_key += 1
+                                
+                            except json.JSONDecodeError:
+                                st.error("AIの判定結果のフォーマットエラーです。もう一度お試しください。")
+                                st.write("生データ:", result_text)
+                                
+                        elif res:
+                            if res.status_code == 503:
+                                st.error("現在AIサーバーが大変混み合っております。")
+                            else:
+                                st.error(f"APIエラー: HTTP {res.status_code} - {res.text}")
+                        else:
+                            st.error("APIリクエストが失敗しました。")
+                    except Exception as e:
+                        st.error(f"通信エラー: {e}")
