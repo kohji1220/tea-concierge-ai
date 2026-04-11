@@ -12,6 +12,7 @@ import requests
 import base64
 import time
 import hashlib
+import datetime
 import streamlit as st
 import chromadb
 
@@ -356,10 +357,17 @@ with tab2:
                             if results['documents'] and len(results['documents']) > 0:
                                 relevant_knowledge = "\n".join(results['documents'][0])
 
+                    # ★AIの「時間喪失」を防ぐため、実行時の現在日時を取得
+                    current_datetime = datetime.datetime.now().strftime("%Y年%m月")
+
                     checker_system_prompt = f"""
                     あなたは、茶葉の販売サイトや商品情報から「サクラ・偽装・粗悪品」を冷徹に見抜くデータ照合マシーンです。
                     ユーザーから提供される【商品情報】（レビュー含む）と、システムから提供される【RAG相場・知識データ】を照合し、以下の厳密なスコアリングロジックに基づいて「サクラ度（0〜100）」を算出してください。
                     感情や情緒には一切流されず、事実とデータのみに基づいて冷酷に判定を下してください。
+
+                    【現在の日付情報 (重要)】
+                    現在の現実は {current_datetime} です。
+                    摘採時期や賞味期限をチェックする際は、この現在日時を基準として妥当性（未来の日付になっていないか、または古すぎないか）を判断してください。
 
                     【RAG知識 (あなたの専門知識データベース)】
                     {relevant_knowledge if relevant_knowledge else "（特になし）"}
